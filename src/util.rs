@@ -1,5 +1,6 @@
-use std::net::Ipv4Addr;
+use std::{f32::consts::PI, net::Ipv4Addr};
 
+#[derive(Debug, Clone, Copy)]
 pub enum ResultCode {
     NOERROR = 0,
     FORMERR = 1,
@@ -22,6 +23,7 @@ impl ResultCode {
     }
 }
 
+#[derive(Debug)]
 pub struct DnsHeader {
     pub id: u16,
 
@@ -90,8 +92,36 @@ impl DnsHeader {
 
         Ok(())
     }
+
+    pub fn write(&self, buffer: &mut BytePacketBuffer) -> Result<(), String> {
+        buffer.write_u16(self.id)?;
+
+        buffer.write_u8(
+            (self.recursion_desired as u8)
+                | ((self.truncated_message as u8) << 1)
+                | ((self.authoritative_answer as u8) << 2)
+                | (self.opcode << 3)
+                | ((self.response as u8) << 7) as u8,
+        )?;
+
+        buffer.write_u8(
+            (self.rescode as u8)
+                | ((self.checking_disabled as u8) << 4)
+                | ((self.authed_data as u8) << 5)
+                | ((self.z as u8) << 6)
+                | ((self.recursion_available as u8) << 7),
+        )?;
+
+        buffer.write_u16(self.questions)?;
+        buffer.write_u16(self.answers)?;
+        buffer.write_u16(self.authoritative_entries)?;
+        buffer.write_u16(self.resource_entries)?;
+
+        Ok(())
+    }
 }
 
+#[derive(Debug)]
 pub enum QueryType {
     UNKNOWN(u16),
     A, //1
@@ -101,26 +131,30 @@ impl QueryType {
     pub fn to_num(&self) -> u16 {
         match *self {
             Self::UNKNOWN(x) => x,
-            Self::A => 1
+            Self::A => 1,
         }
     }
 
     pub fn from_num(num: u16) -> Self {
         match num {
             1 => Self::A,
-            other => QueryType::UNKNOWN(other)
+            other => QueryType::UNKNOWN(other),
         }
     }
 }
 
+#[derive(Debug)]
 pub struct DnsQuestion {
     pub name: String,
-    pub qtype: QueryType
+    pub qtype: QueryType,
 }
 
 impl DnsQuestion {
     pub fn new(name: String, qtype: QueryType) -> Self {
-        Self { name: name, qtype: qtype }
+        Self {
+            name: name,
+            qtype: qtype,
+        }
     }
 
     pub fn read(&mut self, buffer: &mut BytePacketBuffer) -> Result<(), String> {
@@ -130,25 +164,177 @@ impl DnsQuestion {
 
         Ok(())
     }
+
+    pub fn write(&self, buffer: &mut BytePacketBuffer) -> Result<(), String> {
+        buffer.write_qname(&self.name)?;
+
+        let typenum = self.qtype.to_num();
+        buffer.write_u16(typenum)?;
+        buffer.write_u16(1)?;
+
+        Ok(())
+    }
 }
 
+#[derive(Debug)]
 pub enum DnsRecord {
     UNKNOWN {
         domain: String,
         qtype: u16,
         data_len: u16,
-        ttl: u32
+        ttl: u32,
     }, // 0
     A {
         domain: String,
         addr: Ipv4Addr,
-        ttl: u32
+        ttl: u32,
     }, // 1
 }
 
 impl DnsRecord {
+    pub fn read(buffer: &mut BytePacketBuffer) -> Result<DnsRecord, String> {
+        let mut domain = String::new();
+        buffer.read_qname(&mut domain)?;
+
+        let qtype_num = buffer.read_u16()?;
+        let qtype = QueryType::from_num(qtype_num);
+        let _ = buffer.read_u16()?;
+        let ttl = buffer.read_u32()?;
+        let data_len = buffer.read_u16()?;
+
+        match qtype {
+            QueryType::A => {
+                let raw_addr = buffer.read_u32()?;
+
+                let addr = Ipv4Addr::new(
+                    ((raw_addr >> 24) & 0xFF) as u8,
+                    ((raw_addr >> 16) & 0xFF) as u8,
+                    ((raw_addr >> 8) & 0xFF) as u8,
+                    ((raw_addr >> 0) & 0xFF) as u8,
+                );
+
+                Ok(DnsRecord::A { domain, addr, ttl })
+            }
+            QueryType::UNKNOWN(_) => {
+                buffer.step(data_len as usize)?;
+
+                Ok(DnsRecord::UNKNOWN {
+                    domain,
+                    qtype: qtype_num,
+                    data_len,
+                    ttl,
+                })
+            }
+        }
+    }
+
+    pub fn write(&self, buffer: &mut BytePacketBuffer) -> Result<usize, String> {
+        let start_pos = buffer.pos();
+
+        match *self {
+            Self::A {
+                ref domain,
+                ref addr,
+                ttl,
+            } => {
+                buffer.write_qname(domain)?;
+                buffer.write_u16(QueryType::A.to_num())?;
+                buffer.write_u16(1)?;
+                buffer.write_u32(ttl)?;
+                buffer.write_u16(4)?;
+
+                let octets = addr.octets();
+                buffer.write_u8(octets[0])?;
+                buffer.write_u8(octets[1])?;
+                buffer.write_u8(octets[2])?;
+                buffer.write_u8(octets[3])?;
+            }
+            DnsRecord::UNKNOWN { .. } => {
+                println!("Skipping record: {:?}", self);
+            }
+        }
+
+        Ok(buffer.pos() - start_pos)
+    }
 }
 
+#[derive(Debug)]
+pub struct DnsPacket {
+    pub header: DnsHeader,
+    pub questions: Vec<DnsQuestion>,
+    pub answers: Vec<DnsRecord>,
+    pub authorities: Vec<DnsRecord>,
+    pub resources: Vec<DnsRecord>,
+}
+
+impl DnsPacket {
+    pub fn new() -> Self {
+        Self {
+            header: DnsHeader::new(),
+            questions: Vec::new(),
+            answers: Vec::new(),
+            authorities: Vec::new(),
+            resources: Vec::new(),
+        }
+    }
+
+    pub fn from_buffer(buffer: &mut BytePacketBuffer) -> Result<DnsPacket, String> {
+        let mut result = DnsPacket::new();
+        result.header.read(buffer)?;
+
+        for _ in 0..result.header.questions {
+            let mut question = DnsQuestion::new(String::new(), QueryType::UNKNOWN(0));
+            question.read(buffer)?;
+            result.questions.push(question);
+        }
+
+        for _ in 0..result.header.answers {
+            let rec = DnsRecord::read(buffer)?;
+            result.answers.push(rec);
+        }
+
+        for _ in 0..result.header.authoritative_entries {
+            let rec = DnsRecord::read(buffer)?;
+            result.authorities.push(rec);
+        }
+
+        for _ in 0..result.header.resource_entries {
+            let rec = DnsRecord::read(buffer)?;
+            result.resources.push(rec);
+        }
+
+        Ok(result)
+    }
+
+    pub fn write(&mut self, buffer: &mut BytePacketBuffer) -> Result<(), String> {
+        self.header.questions = self.questions.len() as u16;
+        self.header.answers = self.answers.len() as u16;
+        self.header.authoritative_entries = self.authorities.len() as u16;
+        self.header.resource_entries = self.resources.len() as u16;
+
+        self.header.write(buffer)?;
+
+        for question in &self.questions {
+            question.write(buffer)?;
+        }
+
+        for rec in &self.answers {
+            rec.write(buffer)?;
+        }
+
+        for rec in &self.authorities {
+            rec.write(buffer)?;
+        }
+
+        for rec in &self.resources {
+            rec.write(buffer)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 pub struct BytePacketBuffer {
     pub buf: [u8; 512],
     pub pos: usize,
@@ -270,6 +456,55 @@ impl BytePacketBuffer {
         if !jumped {
             self.seek(pos)?;
         }
+
+        Ok(())
+    }
+
+    fn write(&mut self, val: u8) -> Result<(), String> {
+        if self.pos() >= 512 {
+            return Err(String::from("End of buffer"));
+        }
+        self.buf[self.pos] = val;
+        self.pos += 1;
+        Ok(())
+    }
+
+    fn write_u8(&mut self, val: u8) -> Result<(), String> {
+        self.write(val)?;
+
+        Ok(())
+    }
+
+    fn write_u16(&mut self, val: u16) -> Result<(), String> {
+        self.write((val >> 8) as u8)?;
+        self.write((val & 0xFF) as u8)?;
+
+        Ok(())
+    }
+
+    fn write_u32(&mut self, val: u32) -> Result<(), String> {
+        self.write(((val >> 24) & 0xFF) as u8)?;
+        self.write(((val >> 16) & 0xFF) as u8)?;
+        self.write(((val >> 8) & 0xFF) as u8)?;
+        self.write(((val >> 0) & 0xFF) as u8)?;
+
+        Ok(())
+    }
+
+    fn write_qname(&mut self, qname: &str) -> Result<(), String> {
+        for label in qname.split('.') {
+            let len = label.len();
+            if len > 0x3F {
+                return Err(String::from("Single label exceeds 63 characters"));
+            }
+
+            self.write_u8(len as u8)?;
+            for b in label.as_bytes() {
+                self.write_u8(*b)?;
+            }
+        }
+
+        self.write_u8(0)?;
 
         Ok(())
     }
