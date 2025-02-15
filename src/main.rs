@@ -12,8 +12,8 @@ fn main() -> Result<(), String> {
     // let packet = DnsPacket::from_buffer(&mut buffer)?;
     // println!("{packet:#?}");
 
-    let qname = "www.yahoo.com";
-    let qtype = QueryType::A;
+    let qname = "yahoo.com";
+    let qtype = QueryType::MX;
 
     let server = ("1.1.1.1", 53);
 
