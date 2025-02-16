@@ -1,12 +1,10 @@
-use std::{fs::File, io::Read, net::UdpSocket};
+use std::net::{Ipv4Addr, UdpSocket};
 
 use util::{BytePacketBuffer, DnsPacket, DnsQuestion, QueryType, ResultCode};
 
 mod util;
 
-fn lookup(qname: &str, qtype: QueryType) -> Result<DnsPacket, String> {
-    let server = ("1.1.1.1", 53);
-
+fn lookup(qname: &str, qtype: QueryType, server: (Ipv4Addr, u16)) -> Result<DnsPacket, String> {
     let socket = UdpSocket::bind(("0.0.0.0", 43210)).map_err(|e| e.to_string())?;
 
     let mut packet = DnsPacket::new();
@@ -52,7 +50,7 @@ fn handle_query(socket: &UdpSocket) -> Result<(), String> {
     if let Some(question) = request.questions.pop() {
         println!("Recieved query: {question:?}");
 
-        if let Ok(result) = lookup(&question.name, question.qtype) {
+        if let Ok(result) = recursive_lookup(&question.name, question.qtype) {
             packet.questions.push(question);
             packet.header.rescode = result.header.rescode;
 
@@ -88,17 +86,47 @@ fn handle_query(socket: &UdpSocket) -> Result<(), String> {
     Ok(())
 }
 
+fn recursive_lookup(qname: &str, qtype: QueryType) -> Result<DnsPacket, String> {
+    let mut ns = "198.41.0.4".parse::<Ipv4Addr>().unwrap();
+
+    loop {
+        println!("atempting lookup of {qtype:?} {qname} with ns {ns}");
+
+        let ns_copy = ns;
+
+        let server = (ns_copy, 53);
+        let response = lookup(qname, qtype, server)?;
+
+        if !response.answers.is_empty() && response.header.rescode == ResultCode::NOERROR {
+            return Ok(response);
+        }
+
+        if response.header.rescode == ResultCode::NXDOMAIN {
+            return Ok(response);
+        }
+
+        if let Some(new_ns) = response.get_resolved_ns(qname) {
+            ns = new_ns;
+
+            continue;
+        }
+
+        let new_ns_name = match response.get_unresolved_ns(qname) {
+            Some(x) => x,
+            None => return Ok(response),
+        };
+
+        let recursive_response = recursive_lookup(new_ns_name, QueryType::A)?;
+
+        if let Some(new_ns) = recursive_response.get_random_a() {
+            ns = new_ns;
+        } else {
+            return Ok(response);
+        }
+    }
+}
+
 fn main() -> Result<(), String> {
-    // let mut f = File::open("response_packet.txt").map_err(|e| e.to_string())?;
-    // let mut buffer = BytePacketBuffer::new();
-    // f.read(&mut buffer.buf).map_err(|e| e.to_string())?;
-
-    // let packet = DnsPacket::from_buffer(&mut buffer)?;
-    // println!("{packet:#?}");
-
-    let qname = "yahoo.com";
-    let qtype = QueryType::MX;
-
     let socket = UdpSocket::bind(("0.0.0.0", 2053)).map_err(|e| e.to_string())?;
 
     loop {
