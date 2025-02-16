@@ -1,2 +1,2 @@
 # dns-server
-A Dns Server proto
+A Dns Server prototype

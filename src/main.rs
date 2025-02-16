@@ -35,7 +35,7 @@ fn lookup(qname: &str, qtype: QueryType, server: (Ipv4Addr, u16)) -> Result<DnsP
 fn handle_query(socket: &UdpSocket) -> Result<(), String> {
     let mut req_buffer = BytePacketBuffer::new();
 
-    let (a, src) = socket
+    let (_, src) = socket
         .recv_from(&mut req_buffer.buf)
         .map_err(|e| e.to_string())?;
 

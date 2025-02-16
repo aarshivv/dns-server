@@ -1,5 +1,6 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultCode {
     NOERROR = 0,
@@ -18,7 +19,7 @@ impl ResultCode {
             3 => ResultCode::NXDOMAIN,
             4 => ResultCode::NOTIMP,
             5 => ResultCode::REFUSED,
-            0 | _ => ResultCode::NOERROR,
+            _ => ResultCode::NOERROR, // mainly 0
         }
     }
 }
@@ -101,7 +102,7 @@ impl DnsHeader {
                 | ((self.truncated_message as u8) << 1)
                 | ((self.authoritative_answer as u8) << 2)
                 | (self.opcode << 3)
-                | ((self.response as u8) << 7) as u8,
+                | ((self.response as u8) << 7),
         )?;
 
         buffer.write_u8(
@@ -121,6 +122,7 @@ impl DnsHeader {
     }
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy)]
 pub enum QueryType {
     UNKNOWN(u16),
@@ -132,8 +134,8 @@ pub enum QueryType {
 }
 
 impl QueryType {
-    pub fn to_num(&self) -> u16 {
-        match *self {
+    pub fn to_num(self) -> u16 {
+        match self {
             Self::UNKNOWN(x) => x,
             Self::A => 1,
             Self::NS => 2,
@@ -163,10 +165,7 @@ pub struct DnsQuestion {
 
 impl DnsQuestion {
     pub fn new(name: String, qtype: QueryType) -> Self {
-        Self {
-            name: name,
-            qtype: qtype,
-        }
+        Self { name, qtype }
     }
 
     pub fn read(&mut self, buffer: &mut BytePacketBuffer) -> Result<(), String> {
@@ -188,6 +187,8 @@ impl DnsQuestion {
     }
 }
 
+#[allow(dead_code)]
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 pub enum DnsRecord {
     UNKNOWN {
@@ -243,7 +244,7 @@ impl DnsRecord {
                     ((raw_addr >> 24) & 0xFF) as u8,
                     ((raw_addr >> 16) & 0xFF) as u8,
                     ((raw_addr >> 8) & 0xFF) as u8,
-                    ((raw_addr >> 0) & 0xFF) as u8,
+                    (raw_addr & 0xFF) as u8,
                 );
 
                 Ok(DnsRecord::A { domain, addr, ttl })
@@ -256,13 +257,13 @@ impl DnsRecord {
 
                 let addr = Ipv6Addr::new(
                     ((raw_addr1 >> 16) & 0xFFFF) as u16,
-                    ((raw_addr1 >> 0) & 0xFFFF) as u16,
+                    (raw_addr1 & 0xFFFF) as u16,
                     ((raw_addr2 >> 16) & 0xFFFF) as u16,
-                    ((raw_addr2 >> 0) & 0xFFFF) as u16,
+                    (raw_addr2 & 0xFFFF) as u16,
                     ((raw_addr3 >> 16) & 0xFFFF) as u16,
-                    ((raw_addr3 >> 0) & 0xFFFF) as u16,
+                    (raw_addr3 & 0xFFFF) as u16,
                     ((raw_addr4 >> 16) & 0xFFFF) as u16,
-                    ((raw_addr4 >> 0) & 0xFFFF) as u16,
+                    (raw_addr4 & 0xFFFF) as u16,
                 );
 
                 Ok(DnsRecord::AAAA { domain, addr, ttl })
@@ -294,7 +295,7 @@ impl DnsRecord {
 
                 Ok(DnsRecord::MX {
                     domain,
-                    priority: priority,
+                    priority,
                     host: mx,
                     ttl,
                 })
@@ -518,7 +519,7 @@ impl DnsPacket {
                         _ => None,
                     })
             })
-            .map(|addr| *addr)
+            .copied()
             .next()
     }
 
