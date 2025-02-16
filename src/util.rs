@@ -124,7 +124,7 @@ impl DnsHeader {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum QueryType {
     UNKNOWN(u16),
     A,     //1
@@ -158,7 +158,7 @@ impl QueryType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DnsQuestion {
     pub name: String,
     pub qtype: QueryType,
@@ -506,7 +506,7 @@ impl BytePacketBuffer {
         }
     }
 
-    fn pos(&self) -> usize {
+    pub fn pos(&self) -> usize {
         self.pos
     }
 
@@ -541,7 +541,7 @@ impl BytePacketBuffer {
         Ok(self.buf[pos])
     }
 
-    fn get_range(&mut self, start: usize, len: usize) -> Result<&[u8], String> {
+    pub fn get_range(&mut self, start: usize, len: usize) -> Result<&[u8], String> {
         if start + len >= 512 {
             return Err("End of buffer".into());
         }
