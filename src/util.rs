@@ -1,87 +1,73 @@
-use std::{collections::HashMap, future::Future, net::Ipv4Addr, pin::Pin, time::Duration};
+use std::{future::Future, net::Ipv4Addr, pin::Pin, time::Duration};
 
 use tokio::{net::UdpSocket, time::timeout};
 
 use crate::{
     buffer::BytePacketBuffer,
-    dns::{DnsPacket, DnsQuestion, DnsRecord, QueryType, ResultCode},
+    dns::{DnsPacket, DnsQuestion, QueryType, ResultCode},
+    DNS_CACHE,
 };
 
-#[derive(Debug, Default)]
-pub struct DnsServer {
-    cache: HashMap<DnsQuestion, Vec<DnsRecord>>,
-}
+pub async fn handle_query(req_buffer: &mut BytePacketBuffer) -> Result<BytePacketBuffer, String> {
+    let mut request = DnsPacket::from_buffer(req_buffer)?;
 
-impl DnsServer {
-    fn check_cache(&self, question: &DnsQuestion) -> Option<&Vec<DnsRecord>> {
-        self.cache.get(question)
-    }
+    let mut packet = DnsPacket::new();
+    packet.header.id = request.header.id;
+    packet.header.recursion_desired = true;
+    packet.header.recursion_available = true;
+    packet.header.response = true;
 
-    fn insert_answer(&mut self, question: DnsQuestion, answers: Vec<DnsRecord>) {
-        self.cache.insert(question, answers);
-    }
+    if let Some(question) = request.questions.pop() {
+        if let Some(answers) = DNS_CACHE.get().unwrap().get(&question) {
+            println!("Found in cache: returning");
+            packet.questions.push(question);
+            packet.header.rescode = ResultCode::NOERROR;
 
-    pub async fn handle_query(
-        &mut self,
-        req_buffer: &mut BytePacketBuffer,
-    ) -> Result<BytePacketBuffer, String> {
-        let mut request = DnsPacket::from_buffer(req_buffer)?;
+            for rec in answers.clone() {
+                packet.answers.push(rec);
+            }
+        } else if let Ok(result) = recursive_lookup(&question.name, question.qtype).await {
+            packet.questions.push(question.clone());
+            packet.header.rescode = result.header.rescode;
 
-        let mut packet = DnsPacket::new();
-        packet.header.id = request.header.id;
-        packet.header.recursion_desired = true;
-        packet.header.recursion_available = true;
-        packet.header.response = true;
+            if result.header.rescode.eq(&ResultCode::NOERROR) && !result.answers.is_empty() {
+                DNS_CACHE
+                    .get()
+                    .unwrap()
+                    .insert(question, result.answers.clone());
+            }
 
-        if let Some(question) = request.questions.pop() {
-            if let Some(answers) = self.check_cache(&question) {
-                println!("Found in cache: returning");
-                packet.questions.push(question);
-                packet.header.rescode = ResultCode::NOERROR;
+            for rec in result.answers {
+                println!("answer: {rec:?}");
+                packet.answers.push(rec);
+            }
 
-                for rec in answers {
-                    packet.answers.push(rec.clone());
-                }
-            } else if let Ok(result) = recursive_lookup(&question.name, question.qtype).await {
-                packet.questions.push(question.clone());
-                packet.header.rescode = result.header.rescode;
+            for rec in result.authorities {
+                println!("Auth: {rec:?}");
+                packet.authorities.push(rec);
+            }
 
-                if result.header.rescode.eq(&ResultCode::NOERROR) && !result.answers.is_empty() {
-                    self.insert_answer(question, result.answers.clone());
-                }
-
-                for rec in result.answers {
-                    println!("answer: {rec:?}");
-                    packet.answers.push(rec);
-                }
-
-                for rec in result.authorities {
-                    println!("Auth: {rec:?}");
-                    packet.authorities.push(rec);
-                }
-
-                for rec in result.resources {
-                    println!("Resources: {rec:?}");
-                    packet.resources.push(rec);
-                }
-            } else {
-                packet.header.rescode = ResultCode::SERVFAIL;
+            for rec in result.resources {
+                println!("Resources: {rec:?}");
+                packet.resources.push(rec);
             }
         } else {
-            packet.header.rescode = ResultCode::FORMERR;
+            packet.header.rescode = ResultCode::SERVFAIL;
         }
-
-        let mut res_buffer = BytePacketBuffer::new();
-        packet.write(&mut res_buffer)?;
-
-        Ok(res_buffer)
+    } else {
+        packet.header.rescode = ResultCode::FORMERR;
     }
+
+    let mut res_buffer = BytePacketBuffer::new();
+    packet.write(&mut res_buffer)?;
+
+    Ok(res_buffer)
 }
 
 fn recursive_lookup<'a>(
     qname: &'a str,
     qtype: QueryType,
-) -> Pin<Box<dyn Future<Output = Result<DnsPacket, String>> + 'a>> {
+) -> Pin<Box<dyn Future<Output = Result<DnsPacket, String>> + Send + 'a>> {
     Box::pin(async move {
         // Using one of the root server from the global root server.
         let mut ns = "198.41.0.4".parse::<Ipv4Addr>().unwrap();
